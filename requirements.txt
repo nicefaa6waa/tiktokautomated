@@ -1,0 +1,5 @@
+selenium==4.8.0
+webdriver-manager==3.8.4
+moviepy==1.0.3
+opencv-python==4.7.0.72
+ffmpeg-python==0.2.0
