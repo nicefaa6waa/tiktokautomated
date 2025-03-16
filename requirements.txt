@@ -1,5 +1,5 @@
-selenium==4.8.0
-webdriver-manager==3.8.4
+selenium>=4.29.0
+webdriver-manager>=4.0.2
 moviepy==1.0.3
 opencv-python==4.7.0.72
 ffmpeg-python==0.2.0
@@ -9,3 +9,4 @@ pillow
 speechrecognition
 vosk
 googletrans==3.1.0a0
+tiktok-uploader==1.0.16

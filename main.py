@@ -8,6 +8,8 @@ import json
 from googletrans import Translator
 import wave
 import time
+import shutil
+import subprocess
 
 
 def blur_image(image):
@@ -30,7 +32,6 @@ def wrap_text(text, max_width, fontsize):
     lines = []
     current_line = []
     current_width = 0
-
     for word in words:
         word_width = len(word) * fontsize * 0.6
         if current_width + word_width > max_width and current_line:
@@ -48,13 +49,13 @@ def wrap_text(text, max_width, fontsize):
 def generate_subtitles_en(audio_path, duration):
     """Generate English subtitles using speech recognition."""
     recognizer = sr.Recognizer()
-    print(f"Processing audio file: {audio_path}")  # Debug
+    print(f"Processing audio file: {audio_path}")
     with sr.AudioFile(audio_path) as source:
         audio = recognizer.record(source)
-    print(f"Expected audio duration: {duration} seconds")  # Debug
+    print(f"Expected audio duration: {duration} seconds")
     try:
         text = recognizer.recognize_google(audio)
-        print(f"Transcribed: {text}")  # Debug
+        print(f"Transcribed: {text}")
         return [(0, duration, text)]
     except sr.UnknownValueError:
         print("Could not understand audio")
@@ -70,10 +71,8 @@ def generate_subtitles_jp(audio_path, duration):
         print(
             "Please download the Vosk Japanese model 'vosk-model-small-ja-0.22' and place it in the script directory.")
         return []
-
     model = Model("vosk-model-small-ja-0.22")
     recognizer = KaldiRecognizer(model, 16000)
-
     subtitles = []
     with wave.open(audio_path, "rb") as wf:
         while True:
@@ -88,7 +87,6 @@ def generate_subtitles_jp(audio_path, duration):
                         end = word["end"]
                         text = word["word"]
                         subtitles.append((start, end, text))
-
     if subtitles:
         combined_text = " ".join([s[2] for s in subtitles])
         start_time = subtitles[0][0]
@@ -119,8 +117,42 @@ def add_subtitles_to_video(video_clip, subtitles, video_width=1080):
     return CompositeVideoClip([video_clip] + subtitle_clips)
 
 
-def cut_and_process_video(input_path, output_dir, language, add_subtitles_flag=False, start_time="00:00", duration=60,
-                          max_outputs=None, intro_start=None, intro_end=None, outro_start=None, outro_end=None):
+def move_and_upload_videos(source_dir, upload_dir, username="animefandaily", caption="Uploading Daily #SoloLeveling #SungJinwoo #fyp #anime #Jinwoo #Beru"):
+    """Move videos to upload_dir, upload them with delays, and delete after uploading."""
+    if not os.path.exists(upload_dir):
+        os.makedirs(upload_dir)
+
+    video_files = [f for f in os.listdir(source_dir) if f.endswith(".mp4")]
+    video_files.sort()  # Ensure order: output_1.mp4, output_2.mp4, output_3.mp4
+
+    for video in video_files:
+        source_path = os.path.join(source_dir, video)
+        dest_path = os.path.join(upload_dir, video)
+        shutil.move(source_path, dest_path)
+        print(f"Moved {video} to {upload_dir}")
+
+        cli_dir = "uploader"  # Directory containing cli.py
+        upload_command = [
+            "python", "cli.py", "upload",
+            "-u", username,
+            "-v", video,
+            "-t", caption
+        ]
+        print(f"Running: {' '.join(upload_command)} from {cli_dir}")
+        subprocess.run(upload_command, cwd=cli_dir, check=True)
+        print(f"Uploaded {video}")
+
+        os.remove(dest_path)
+        print(f"Deleted {dest_path}")
+
+        if video != video_files[-1]:
+            print("Waiting 10 minutes before next upload...")
+            time.sleep(600)
+
+
+def cut_and_process_video(input_path, output_dir, language, total_output_count, add_subtitles_flag=False,
+                          start_time="00:00", duration=60, max_outputs=None, intro_start=None, intro_end=None,
+                          outro_start=None, outro_end=None):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -135,6 +167,7 @@ def cut_and_process_video(input_path, output_dir, language, add_subtitles_flag=F
 
     current_time = start_time_in_sec
     output_count = 0
+    recent_outputs = []
 
     try:
         while current_time < total_duration and (max_outputs is None or output_count < max_outputs):
@@ -195,16 +228,17 @@ def cut_and_process_video(input_path, output_dir, language, add_subtitles_flag=F
 
             if add_subtitles_flag:
                 audio_path = os.path.join(output_dir, f"temp_audio_{output_count + 1}.wav")
-                print(f"Extracting audio to: {audio_path}")  # Debug
+                print(f"Extracting audio to: {audio_path}")
                 cut_video.audio.write_audiofile(audio_path, codec='pcm_s16le', fps=16000)
-                print(f"Audio extracted successfully: {os.path.exists(audio_path)}")  # Debug
+                print(f"Audio extracted successfully: {os.path.exists(audio_path)}")
                 if language == "en":
                     subtitles = generate_subtitles_en(audio_path, segment_end - current_time)
                 elif language == "jp":
                     subtitles = generate_subtitles_jp(audio_path, segment_end - current_time)
                 if subtitles:
                     final_video = add_subtitles_to_video(final_video, subtitles)
-                # os.remove(audio_path)  # Uncomment after debugging
+                if os.path.exists(audio_path):
+                    os.remove(audio_path)
 
             output_path = os.path.join(output_dir, f"output_{output_count + 1}.mp4")
             final_video.write_videofile(
@@ -223,6 +257,15 @@ def cut_and_process_video(input_path, output_dir, language, add_subtitles_flag=F
 
             current_time = segment_end
             output_count += 1
+            total_output_count[0] += 1
+            recent_outputs.append(output_path)
+
+            # Upload after every 3 outputs
+            if total_output_count[0] % 3 == 0 and total_output_count[0] > 0:
+                print(f"\nGenerated {total_output_count[0]} total output segments. Uploading...")
+                move_and_upload_videos(output_dir, os.path.join("uploader", "VideosDirPath"))
+                print("Resuming processing...")
+
     finally:
         video.close()
         if 'temp_video_0' in locals():
@@ -237,14 +280,12 @@ def cut_and_process_video(input_path, output_dir, language, add_subtitles_flag=F
 
 def scan_and_select_videos(input_dir):
     """Scan input directory for .mkv files and let user exclude some, sorted alphabetically."""
-    video_files = sorted([f for f in os.listdir(input_dir) if f.endswith('.mkv')])  # Sort alphabetically
+    video_files = sorted([f for f in os.listdir(input_dir) if f.endswith('.mkv')])
     if not video_files:
         raise ValueError(f"No .mkv files found in {input_dir}")
-
     print("\nAvailable videos:")
     for i, video in enumerate(video_files, 1):
         print(f"{i}) {video}")
-
     exclude_input = input("Enter numbers of videos to exclude (e.g., 1,2,3), or leave blank to include all: ").strip()
     if exclude_input:
         exclude_indices = [int(i) - 1 for i in exclude_input.split(',') if i.strip().isdigit()]
@@ -252,10 +293,8 @@ def scan_and_select_videos(input_dir):
                            i not in exclude_indices]
     else:
         selected_videos = [os.path.join(input_dir, video) for video in video_files]
-
     if not selected_videos:
         raise ValueError("No videos selected after exclusion.")
-
     return selected_videos
 
 
@@ -274,14 +313,12 @@ def collect_intro_outro_times(video_list):
                 intro_end = input(f"Enter intro end time for {video_path} (e.g., 02:15): ").strip()
             if not intro_end:
                 raise ValueError("Intro end time must be provided if intro start time is specified.")
-
         outro_start = input(
             f"Enter outro start time for {video_path} (e.g., 22:00, leave blank if no outro): ").strip() or None
         outro_end = None
         if outro_start:
             outro_end = input(
                 f"Enter outro end time for {video_path} (e.g., 23:00, 'end' for video end): ").strip() or "end"
-
         timing_data[video_path] = {
             "intro_start": intro_start,
             "intro_end": intro_end,
@@ -296,66 +333,40 @@ def process_multiple_videos(video_list, base_output_dir, project_name, start_tim
     if not os.path.exists(project_dir):
         os.makedirs(project_dir)
 
-    # Collect intro/outro times for all videos upfront
     timing_data = collect_intro_outro_times(video_list)
+    total_output_count = [0]  # Track total outputs across all videos
 
-    # Process in batches of 3
-    batch_size = 3
-    for i in range(0, len(video_list), batch_size):
-        batch = video_list[i:i + batch_size]
-        for video_number, video_path in enumerate(batch, start=i + 1):  # Use video_number for folder naming
-            video_output_dir = os.path.join(project_dir, str(video_number))  # Folder named 1, 2, 3, etc.
+    for video_number, video_path in enumerate(video_list, start=1):
+        video_output_dir = os.path.join(project_dir, str(video_number))
+        print(f"\nProcessing {video_path}")
+        max_outputs_input = input(
+            f"How many outputs do you want per video for {video_path}? (e.g., 5 or leave blank (until video ends)): ").strip()
+        max_outputs = int(max_outputs_input) if max_outputs_input else None
+        language = input(
+            f"What language is {video_path} in? (jp for Japanese, en for English, other for other languages): ").strip().lower()
+        if language not in ["jp", "en", "other"]:
+            raise ValueError("Language must be 'jp', 'en', or 'other'.")
+        add_subtitles_flag = False
+        if language == "en":
+            add_subtitles = input(f"Do you want to add subtitles for {video_path}? (yes/no): ").strip().lower()
+            add_subtitles_flag = add_subtitles == "yes"
+        elif language == "jp":
+            print(f"Video is Japanese, subtitles will be added in English.")
+            add_subtitles_flag = True
+        elif language == "other":
+            print("Only English and Japanese subtitles are supported. Subtitles will not be added.")
 
-            print(f"\nProcessing {video_path}")
-            max_outputs_input = input(
-                f"How many outputs do you want per video for {video_path}? (e.g., 5 or leave blank (until video ends)): ").strip()
-            max_outputs = int(max_outputs_input) if max_outputs_input else None
-
-            language = input(
-                f"What language is {video_path} in? (jp for Japanese, en for English, other for other languages): ").strip().lower()
-            if language not in ["jp", "en", "other"]:
-                raise ValueError("Language must be 'jp', 'en', or 'other'.")
-
-            add_subtitles_flag = False
-            if language == "en":
-                add_subtitles = input(f"Do you want to add subtitles for {video_path}? (yes/no): ").strip().lower()
-                add_subtitles_flag = add_subtitles == "yes"
-            elif language == "jp":
-                print(f"Video is Japanese, subtitles will be added in English.")
-                add_subtitles_flag = True
-            elif language == "other":
-                print("Only English and Japanese subtitles are supported. Subtitles will not be added.")
-
-            # Retrieve pre-collected intro/outro times
-            times = timing_data[video_path]
-            intro_start = times["intro_start"]
-            intro_end = times["intro_end"]
-            outro_start = times["outro_start"]
-            outro_end = times["outro_end"]
-
-            cut_and_process_video(video_path, video_output_dir, language, add_subtitles_flag, start_time, duration,
-                                  max_outputs, intro_start, intro_end, outro_start, outro_end)
-
-        # Pause after every 3 videos (unless it's the last batch)
-        if i + batch_size < len(video_list):
-            print(f"\nProcessed {i + len(batch)} videos. Pausing... Run the upload script to continue.")
-            resume_flag = "resume.flag"
-            if os.path.exists(resume_flag):
-                os.remove(resume_flag)  # Clear any existing flag
-            while not os.path.exists(resume_flag):
-                time.sleep(1)  # Check every second
-            os.remove(resume_flag)  # Clean up the flag
-            print("Resuming processing...")
+        times = timing_data[video_path]
+        cut_and_process_video(video_path, video_output_dir, language, total_output_count, add_subtitles_flag,
+                              start_time, duration, max_outputs, times["intro_start"], times["intro_end"],
+                              times["outro_start"], times["outro_end"])
 
 
-# Main execution
 if __name__ == "__main__":
     project_name = input("Enter project name (e.g., Solo Leveling): ").strip()
     if not project_name:
         raise ValueError("Project name cannot be empty.")
-
     input_directory = "input_videos"
-    # Scan and select videos
     input_videos = scan_and_select_videos(input_directory)
-    base_output_directory = "output_videos"
+    base_output_directory = "video_output"  # Changed from output_videos to video_output
     process_multiple_videos(input_videos, base_output_directory, project_name, start_time="00:30", duration=60)
